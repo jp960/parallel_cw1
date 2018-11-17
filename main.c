@@ -2,9 +2,8 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <math.h>
-#include <string.h>
+#include <mem.h>
 
-int REASONABLE_THREAD_MAX = 300;
 pthread_mutex_t lock;
 pthread_barrier_t barrier;
 
@@ -31,21 +30,19 @@ void setArray(double *one, double *two, int size, FILE * fp) {
     }
 }
 
-void setThreadArraySections(int start_i, int end_i, int dimension, int numThreads, int self){
+void setThreadArraySections(int *start_i, int *end_i, int dimension, int numThreads, int self){
     int remainder, rowsToUse, numRows;
 
     numRows = dimension - 2;
     rowsToUse = (int) floor(numRows / numThreads);
     remainder = (numRows % numThreads);
-    printf("remainder %d\n", remainder);
-    printf("rows to use %d\n", rowsToUse);
     if (remainder - self >= 0) {
-        start_i = (self - 1) * rowsToUse + (self - 1) + 1;
+        *start_i = (self - 1) * rowsToUse + (self - 1) + 1;
         rowsToUse++;
     } else {
-        start_i = (self - 1) * rowsToUse + remainder + 1;
+        *start_i = (self - 1) * rowsToUse + remainder + 1;
     }
-    end_i = start_i + rowsToUse;
+    *end_i = *start_i + rowsToUse;
 }
 
 struct arg_struct {
@@ -83,14 +80,13 @@ void sequentialSolver(void *arguments) {
         args->currentArray = args->nextArray;
         args->nextArray = temp;
     }
-    printf("\nSequential Answer: \n");
-    printArray(args->currentArray, args->dimension);
-    printf("\n");
+//    printf("\nSequential Answer: \n");
+//    printArray(args->currentArray, args->dimension);
+//    printf("\n");
 }
 
 void *parallelSolver(void *arguments) {
     struct arg_struct *args = (struct arg_struct *) arguments;
-    printf("Dimension: %d\n", args->dimension);
 
     int count = 0;
     int self = (int) pthread_self();
@@ -102,10 +98,8 @@ void *parallelSolver(void *arguments) {
     double * localTwo = args->nextArray;
     double a, b, c, d, av, current, diff;
 
-    setThreadArraySections(start_i, end_i, args->dimension, args->numThreads, self);
+    setThreadArraySections(&start_i, &end_i, args->dimension, args->numThreads, self);
 
-    printf("thread id: %d, ", self);
-    printf("start: %d, end: %d\n", start_i, end_i);
     while (1) {
         for (int i = start_i; i < end_i; i++) {
             for (int j = 1; j < args->dimension - 1; j++) {
@@ -127,9 +121,9 @@ void *parallelSolver(void *arguments) {
         pthread_barrier_wait(&barrier);
         if (currentStop == 1) {
             if (self == 1) {
-                printf("\nParallel Answer: \n");
-                printArray(localOne, args->dimension);
-                printf("\n");
+//                printf("\nParallel Answer: \n");
+//                printArray(localOne, args->dimension);
+//                printf("\n");
             }
             pthread_exit(0);
             break;
@@ -148,6 +142,52 @@ void *parallelSolver(void *arguments) {
             currentStop = nextStop;
             count--;
         }
+    }
+}
+
+void precisionTest(void *arguments) {
+    struct arg_struct *args = (struct arg_struct *) arguments;
+    int size = args->dimension*args->dimension;
+    int count = 0;
+    double diff;
+    for (int i = 0;i <size; i++) {
+        diff = fabs(args->currentArray[i] - args->nextArray[i]);
+        if (diff > args->precision) {
+            count++;
+        }
+    }
+    if(count != 0){
+        printf("Not precise in %d places\n", count);
+    }
+    else {
+        printf("Precise\n");
+    }
+}
+
+void correctnessTest(void * one, void * two) {
+    struct arg_struct *args1 = (struct arg_struct *) one;
+    struct arg_struct *args2 = (struct arg_struct *) two;
+    int size = args1->dimension*args1->dimension;
+    double results[size];
+    memset(results, 0, sizeof(results));
+    int count = 0;
+    double diff;
+
+    for (int i = 0; i < args1->dimension; i++) {
+        for (int j = 0; j < args1->dimension; j++) {
+            diff = fabs(args1->currentArray[i * args1->dimension + j] - args2->nextArray[i * args2->dimension + j]);
+            if (diff != 0) {
+                results[i * args1->dimension + j] = diff;
+                count++;
+            }
+        }
+    }
+    if(count != 0){
+        printf("Not correct in %d places\n", count);
+        printArray(results, args1->dimension);
+    }
+    else {
+        printf("Correct\n");
     }
 }
 
@@ -176,7 +216,6 @@ int main(int argc, char *argv[]) {
         double arr1[arraySize];
         double arr2[arraySize];
 
-
         FILE * fp = fopen("./numbers.txt", "r+");
         setArray(arr1, arr2, arraySize, fp);
 
@@ -189,6 +228,7 @@ int main(int argc, char *argv[]) {
         seqArgs.currentStop = 0;
 
         sequentialSolver(&seqArgs);
+        precisionTest(&seqArgs);
 
         struct arg_struct parallelArgs;
         parallelArgs.dimension = dimension;
@@ -209,5 +249,7 @@ int main(int argc, char *argv[]) {
             pthread_join(thread[i], NULL);
         }
         pthread_mutex_destroy(&lock);
+        precisionTest(&parallelArgs);
+        correctnessTest(&seqArgs, &parallelArgs);
     }
 }
