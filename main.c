@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <stdbool.h>
+#include <pthread_time.h>
 
 int REASONABLE_THREAD_MAX = 300;
 pthread_mutex_t lock;
@@ -22,16 +24,17 @@ void printArray(const double *current, int dimension) {
         }
         printf("\n");
     }
+    printf("\n");
 }
 
-void copyArray(double *dest, const double *src, int dimension) {
-    int i, j;
-    for (i = 0; i < dimension; i++) {
-        for (j = 0; j < dimension; j++) {
-            dest[i * dimension + j] = src[i * dimension + j];
-        }
-    }
-}
+//void copyArray(double *dest, const double *src, int dimension) {
+//    int i, j;
+//    for (i = 0; i < dimension; i++) {
+//        for (j = 0; j < dimension; j++) {
+//            dest[i * dimension + j] = src[i * dimension + j];
+//        }
+//    }
+//}
 
 void setArray(double *one, double *two, int size, FILE * fp) {
     for (int k = 0; k < size; k++){
@@ -46,12 +49,18 @@ struct arg_struct {
     double *two;
     double precision;
     int numThreads;
-    int stop;
+    int *stopOne;
+    int *stopTwo;
 };
 
+
 void *solver(void *arguments) {
+
+
+    struct timespec begin, end;
+    long time_spent;
+
     struct arg_struct *args = (struct arg_struct *) arguments;
-    printf("Dimension: %d\n", args->dimension);
 
     int self = (int) pthread_self();
     int start_i, end_i, remainder, rowsToUse, numRows;
@@ -59,8 +68,6 @@ void *solver(void *arguments) {
     numRows = args->dimension - 2;
     rowsToUse = (int) floor(numRows / args->numThreads);
     remainder = (numRows % args->numThreads);
-    printf("remainder %d\n", remainder);
-    printf("rows to use %d\n", rowsToUse);
     if (remainder - self >= 0) {
         start_i = (self - 1) * rowsToUse + (self - 1) + 1;
         rowsToUse++;
@@ -70,99 +77,146 @@ void *solver(void *arguments) {
     end_i = start_i + rowsToUse;
 
     double a, b, c, d, av, current, diff;
+    double *localOne = args->one;
+    double *localTwo = args->two;
 
-    printf("thread id: %d, ", self);
-    printf("start: %d, end: %d\n", start_i, end_i);
+    int  *stopNext = args->stopTwo;
+    int  *stopCurrent  = args->stopOne;
+    int dimension = args->dimension;
+    int count = 0;
+    int test = 0;
     while (1) {
+
         for (int i = start_i; i < end_i; i++) {
-            for (int j = 1; j < args->dimension - 1; j++) {
-                current = args->one[i * args->dimension + j];
-                a = *((args->one + (i - 1) * args->dimension) + j);
-                b = *((args->one + i * args->dimension) + (j - 1));
-                c = *((args->one + (i + 1) * args->dimension) + j);
-                d = *((args->one + i * args->dimension) + (j + 1));
+            for (int j = 1; j < dimension - 1; j++) {
+
+                current = localOne[i * dimension + j];
+                a = *((localOne + (i - 1) * dimension) + j);
+                b = *((localOne + i * dimension) + (j - 1));
+                c = *((localOne + (i + 1) * dimension) + j);
+                d = *((localOne + i * dimension) + (j + 1));
                 av = average(a, b, c, d);
+
                 diff = fabs(av - current);
-                if (diff > args->precision) {
-                    args->two[i * args->dimension + j] = av;
-                    if(i==1 && j==1){
-//                        printf("%d, %d: %lf thread id: %d\n", i, j, args->two[i * args->dimension + j], self);
-//                        printf("diff: %lf thread id: %d\n", diff, self);
-                        printf("one: %lf   two: %lf   diff: %lf\n ", args->one[i * args->dimension + j], args->two[i * args->dimension + j], diff);
-                    }
+                localTwo[i * dimension + j] = av;
+
+                if ((*stopCurrent == 1)&&(diff > args->precision)) {
                     pthread_mutex_lock(&lock);
-                    args->stop = 0;
+                    *stopCurrent = 0;
                     pthread_mutex_unlock(&lock);
                 }
+
             }
         }
+        test++;
+
+
         pthread_barrier_wait(&barrier);
-        if (self == 1) {
-//            copyArray(args->one, args->two, args->dimension);
-            memcpy(args->one, args->two, (sizeof(double)*args->dimension*args->dimension));
-//            printf("swap arrays thread id: %d\n", self);
-//            double *temp = args->one;
-//            args->one = args->two;
-//            args->two = temp;
-        }
-        if (args->stop == 1) {
-            printf("\nshould stop here\n");
-            if (self == 1) {
-                printf("\nstopped input: \n");
-                printArray(args->two, args->dimension);
-                printf("\n");
-            }
+
+        if (*stopCurrent == 1) {
             pthread_exit(0);
             break;
         }
+        *stopNext = 1;
         pthread_barrier_wait(&barrier);
-//        printf("stop before: %d thread id: %d\n", args->stop, self);
-        args->stop = 1;
-        pthread_barrier_wait(&barrier);
-//        printf("stop after: %d thread id: %d\n", args->stop, self);
+
+
+        if (count == 0){
+            localOne = args->one;
+            localTwo  = args->two;
+            stopCurrent = args->stopOne;
+            stopNext = args->stopTwo;
+            count += 1;
+
+        }
+
+        else{
+            localOne = args->two;
+            localTwo  = args->one;
+            stopCurrent = args->stopTwo;
+            stopNext = args->stopOne;
+            count -= 1;
+        }
+
     }
+
 }
 
-int main(int argc, char *argv[]) {
-    if (argc > 1) {
-        unsigned int numThreads = (unsigned int)atoi(argv[1]);
-        int dimension = atoi(argv[2]);
-        int arraySize = dimension*dimension;
+double *checkPrecision(double *arrayOne, double*arrayTwo, int dim, double precision){
+    double *arrayOut = malloc(sizeof(double)*dim*dim);
+    int i;
+    double diff;
+//    printf("Precision = %f\n", precision);
+    for (i=0; i<dim*dim; i++){
+        diff = abs(arrayOne[i] - arrayTwo[i]);
+//        printf("Check %d = %f = %f - %f\n", i, diff, arrayOne[i], arrayTwo[i]);
+        arrayOut[i] = diff<precision;
+    }
+    return arrayOut;
+}
 
-        pthread_t *thread = malloc(sizeof(pthread_t) * numThreads);
-        if (thread == NULL) {
-            printf("out of memory\n");
-            exit(EXIT_FAILURE);
+pthread_t  *createThread(int numThreads) {
+    pthread_t *thread = malloc(sizeof(pthread_t) * numThreads);
+    if (thread == NULL) {
+        printf("out of memory\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (pthread_mutex_init(&lock, NULL) != 0) {
+        printf("mutex init failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (pthread_barrier_init(&barrier, NULL, numThreads) != 0) {
+        printf("barrier init failed\n");
+        exit(EXIT_FAILURE);
+    }
+    return thread;
+}
+
+void* solverSeq(void *in) {
+    struct arg_struct *args = (struct arg_struct *) in;
+
+    double a, b, c, d, av;
+    double * current;
+    int test = 0;
+    bool stop = false;
+
+    while (!stop) {
+        stop = true;
+        test++;
+        for (int i = 1; i < args->dimension-1; i++) {
+            for (int j = 1; j < args->dimension-1; j++) {
+                current = ((args->two+i*args->dimension) + j);
+                a = *((args->one+(i-1)*args->dimension) + j);
+                b = *((args->one+i*args->dimension) + (j-1));
+                c = *((args->one+(i+1)*args->dimension) + j);
+                d = *((args->one+i*args->dimension) + (j+1));
+                av = average(a, b, c, d);
+                if (fabs(av - *current) > args->precision) {
+                    stop = false;
+                }
+                args->two[i*args->dimension + j] = av;
+
+            }
         }
+        double *temp = args->one;
+        args->one = args->two;
+        args->two = temp;
 
-        if (pthread_mutex_init(&lock, NULL) != 0) {
-            printf("mutex init failed\n");
-            exit(EXIT_FAILURE);
-        }
+    }
+    printf("test:%d\n", test);
 
-        if (pthread_barrier_init(&barrier, NULL, numThreads) != 0) {
-            printf("barrier init failed\n");
-            exit(EXIT_FAILURE);
-        }
+}
 
+double *doSolve(struct arg_struct args,  int numThreads){
+    if (numThreads ==1) {
+        solverSeq(&args);
+        return args.one;
+    }
+    else {
+        pthread_t *thread = createThread(numThreads);
         int i;
-        double ar[25] = {5, 7, 8, 9, 11, 2, 2, 7, 5, 7, 9, 6, 1, 8, 2, 8, 3, 9, 4, 3, 3, 4, 7, 8, 9};
-        double ar2[25] = {5, 7, 8, 9, 11, 2, 2, 7, 5, 7, 9, 6, 1, 8, 2, 8, 3, 9, 4, 3, 3, 4, 7, 8, 9};
-        double arr1[arraySize];
-        double arr2[arraySize];
-
-
-        FILE * fp = fopen("./numbers.txt", "r+");
-        setArray(arr1, arr2, arraySize, fp);
-
-        struct arg_struct args;
-        args.dimension = dimension;
-        args.precision = 0.001;
-        args.one = arr1;
-        args.two = arr2;
-        args.numThreads = numThreads;
-        args.stop = 0;
-
         for (i = 0; i < numThreads; i++) {
             if (pthread_create(&thread[i], NULL, solver, (void *) &args) != 0) {
                 printf("Error. \n");
@@ -172,6 +226,88 @@ int main(int argc, char *argv[]) {
         for (i = 0; i < numThreads; i++) {
             pthread_join(thread[i], NULL);
         }
+        return args.one;
+    }
+
+}
+
+int main(int argc, char *argv[]) {
+    if (argc > 1) {
+        unsigned int numThreads = (unsigned int)atoi(argv[1]);
+        int dimension = atoi(argv[2]);
+        double precision;
+
+        precision = atof(argv[3]);
+        int arraySize = dimension*dimension;
+
+
+
+        int i;
+
+
+        double arr1[arraySize];
+        double arr2[arraySize];
+
+
+        FILE * fp = fopen("./numbers.txt", "r+");
+        setArray(arr1, arr2, arraySize, fp);
+        pthread_t *thread = createThread(numThreads);
+        pthread_t *sThread = createThread(1);
+
+
+        struct arg_struct argsSeq;
+        argsSeq.dimension = dimension;
+        argsSeq.precision = precision;
+        argsSeq.one = arr1;
+        argsSeq.two = arr2;
+        argsSeq.numThreads = 1;
+        argsSeq.stopOne = malloc(sizeof(int));
+        argsSeq.stopTwo = malloc(sizeof(int));
+
+        struct arg_struct args;
+        args.dimension = dimension;
+        args.precision = precision;
+        args.one = arr1;
+        args.two = arr2;
+        args.numThreads = numThreads;
+        args.stopOne = malloc(sizeof(int));
+        args.stopTwo = malloc(sizeof(int));
+
+        struct timespec begin, end;
+        long time_spent;
+
+
+        clock_gettime(CLOCK_MONOTONIC, &begin);
+        double *par = doSolve(args, args.numThreads);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        time_spent = (1000000000L * (end.tv_sec - begin.tv_sec)) + end.tv_nsec - begin.tv_nsec;
+        printf("cores: %d, array size: %d, time: %llu nanoseconds.\n", numThreads, args.dimension, (unsigned long long int) time_spent);
+//        printf("Parallel Result: \n");
+//        printArray(par, dimension);
+
+//        clock_gettime(CLOCK_MONOTONIC, &begin);
+//        double *seq = doSolve(argsSeq, 1);
+//        clock_gettime(CLOCK_MONOTONIC, &end);
+//        time_spent = (1000000000L * (end.tv_sec - begin.tv_sec)) + end.tv_nsec - begin.tv_nsec;
+//        printf("cores: %d, array size: %d, time: %llu nanoseconds.\n", 1, args.dimension, (unsigned long long int) time_spent);
+//        printf("Sequential Result: \n");
+//        printArray(seq, dimension);
+
+
+        //38440253
+//        printf("Sequential Result: \n");
+//        printArray(seq, dimension);
+
+//        double *check = malloc(sizeof(double)*dimension*dimension);
+//        check = checkPrecision(seq, par, dimension, precision);
+////        printf("Check Correctness: a value of 1 indicates\ndifference is within precision\n");
+//        printArray(check, dimension);
+//        int sum = 0;
+//        for (i = 0; i<dimension*dimension; i++){
+//            sum += check[i];
+//        }
+//        printf("Sum of Correctness array should be dim^2 = %d\nSum: %d", dimension*dimension, sum);
+
         pthread_mutex_destroy(&lock);
     }
 }
