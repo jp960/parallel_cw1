@@ -24,15 +24,6 @@ void printArray(const double *current, int dimension) {
     }
 }
 
-//void copyArray(double *dest, const double *src, int dimension) {
-//    int i, j;
-//    for (i = 0; i < dimension; i++) {
-//        for (j = 0; j < dimension; j++) {
-//            dest[i * dimension + j] = src[i * dimension + j];
-//        }
-//    }
-//}
-
 void setArray(double *one, double *two, int size, FILE * fp) {
     for (int k = 0; k < size; k++){
         fscanf(fp, "%lf,", &one[k]);
@@ -40,13 +31,30 @@ void setArray(double *one, double *two, int size, FILE * fp) {
     }
 }
 
+void setThreadArraySections(int start_i, int end_i, int dimension, int numThreads, int self){
+    int remainder, rowsToUse, numRows;
+
+    numRows = dimension - 2;
+    rowsToUse = (int) floor(numRows / numThreads);
+    remainder = (numRows % numThreads);
+    printf("remainder %d\n", remainder);
+    printf("rows to use %d\n", rowsToUse);
+    if (remainder - self >= 0) {
+        start_i = (self - 1) * rowsToUse + (self - 1) + 1;
+        rowsToUse++;
+    } else {
+        start_i = (self - 1) * rowsToUse + remainder + 1;
+    }
+    end_i = start_i + rowsToUse;
+}
+
 struct arg_struct {
     int dimension;
-    double *one;
-    double *two;
+    double *currentArray;
+    double *nextArray;
     double precision;
     int numThreads;
-    int stop;
+    int currentStop;
 };
 
 void sequentialSolver(void *arguments) {
@@ -58,54 +66,43 @@ void sequentialSolver(void *arguments) {
         stop = 1;
         for (int i = 1; i < args->dimension - 1; i++) {
             for (int j = 1; j < args->dimension - 1; j++) {
-                current = args->one[i * args->dimension + j];
-                a = *((args->one + (i - 1) * args->dimension) + j);
-                b = *((args->one + i * args->dimension) + (j - 1));
-                c = *((args->one + (i + 1) * args->dimension) + j);
-                d = *((args->one + i * args->dimension) + (j + 1));
+                current = args->currentArray[i * args->dimension + j];
+                a = *((args->currentArray + (i - 1) * args->dimension) + j);
+                b = *((args->currentArray + i * args->dimension) + (j - 1));
+                c = *((args->currentArray + (i + 1) * args->dimension) + j);
+                d = *((args->currentArray + i * args->dimension) + (j + 1));
                 av = average(a, b, c, d);
                 diff = fabs(av - current);
-                args->two[i * args->dimension + j] = av;
+                args->nextArray[i * args->dimension + j] = av;
                 if (diff > args->precision) {
                     stop = 0;
                 }
             }
         }
-        double * temp = args->one;
-        args->one = args->two;
-        args->two = temp;
+        double * temp = args->currentArray;
+        args->currentArray = args->nextArray;
+        args->nextArray = temp;
     }
     printf("\nSequential Answer: \n");
-    printArray(args->one, args->dimension);
+    printArray(args->currentArray, args->dimension);
     printf("\n");
 }
 
-void *solver(void *arguments) {
+void *parallelSolver(void *arguments) {
     struct arg_struct *args = (struct arg_struct *) arguments;
     printf("Dimension: %d\n", args->dimension);
 
     int count = 0;
-
     int self = (int) pthread_self();
-    int start_i, end_i, remainder, rowsToUse, numRows;
-
-    numRows = args->dimension - 2;
-    rowsToUse = (int) floor(numRows / args->numThreads);
-    remainder = (numRows % args->numThreads);
-    printf("remainder %d\n", remainder);
-    printf("rows to use %d\n", rowsToUse);
-    if (remainder - self >= 0) {
-        start_i = (self - 1) * rowsToUse + (self - 1) + 1;
-        rowsToUse++;
-    } else {
-        start_i = (self - 1) * rowsToUse + remainder + 1;
-    }
-    end_i = start_i + rowsToUse;
-
-    double * localOne = args->one;
-    double * localTwo = args->two;
-
+    int start_i = 0;
+    int end_i = 0;
+    int currentStop = args->currentStop;
+    int nextStop = 0;
+    double * localOne = args->currentArray;
+    double * localTwo = args->nextArray;
     double a, b, c, d, av, current, diff;
+
+    setThreadArraySections(start_i, end_i, args->dimension, args->numThreads, self);
 
     printf("thread id: %d, ", self);
     printf("start: %d, end: %d\n", start_i, end_i);
@@ -121,16 +118,14 @@ void *solver(void *arguments) {
                 diff = fabs(av - current);
                 localTwo[i * args->dimension + j] = av;
                 if (diff > args->precision) {
-//                    printf("Thread id: %d \n", self);
-//                    printf("%d %lf\n", args->stop, diff);
                     pthread_mutex_lock(&lock);
-                    args->stop = 0;
+                    currentStop = 0;
                     pthread_mutex_unlock(&lock);
                 }
             }
         }
         pthread_barrier_wait(&barrier);
-        if (args->stop == 1) {
+        if (currentStop == 1) {
             if (self == 1) {
                 printf("\nParallel Answer: \n");
                 printArray(localOne, args->dimension);
@@ -139,23 +134,20 @@ void *solver(void *arguments) {
             pthread_exit(0);
             break;
         }
+        nextStop = 1;
 
         if (count == 0) {
-            localOne = args->two;
-            localTwo = args->one;
+            localOne = args->nextArray;
+            localTwo = args->currentArray;
+            currentStop = nextStop;
             count++;
         }
         else {
-            localOne = args->one;
-            localTwo = args->two;
+            localOne = args->currentArray;
+            localTwo = args->nextArray;
+            currentStop = nextStop;
             count--;
         }
-//        if (self == 1) {
-//            memcpy(localOne, localTwo, (sizeof(double)*args->dimension*args->dimension));
-//        }
-        pthread_barrier_wait(&barrier);
-        args->stop = 1;
-        pthread_barrier_wait(&barrier);
     }
 }
 
@@ -191,24 +183,24 @@ int main(int argc, char *argv[]) {
         struct arg_struct seqArgs;
         seqArgs.dimension = dimension;
         seqArgs.precision = 0.00001;
-        seqArgs.one = arr1;
-        seqArgs.two = arr2;
+        seqArgs.currentArray = arr1;
+        seqArgs.nextArray = arr2;
         seqArgs.numThreads = numThreads;
-        seqArgs.stop = 0;
+        seqArgs.currentStop = 0;
 
         sequentialSolver(&seqArgs);
 
         struct arg_struct parallelArgs;
         parallelArgs.dimension = dimension;
         parallelArgs.precision = 0.00001;
-        parallelArgs.one = arr1;
-        parallelArgs.two = arr2;
+        parallelArgs.currentArray = arr1;
+        parallelArgs.nextArray = arr2;
         parallelArgs.numThreads = numThreads;
-        parallelArgs.stop = 0;
+        parallelArgs.currentStop = 0;
 
         int i;
         for (i = 0; i < numThreads; i++) {
-            if (pthread_create(&thread[i], NULL, solver, (void *) &parallelArgs) != 0) {
+            if (pthread_create(&thread[i], NULL, parallelSolver, (void *) &parallelArgs) != 0) {
                 printf("Error. \n");
                 exit(EXIT_FAILURE);
             }
