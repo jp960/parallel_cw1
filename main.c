@@ -2,8 +2,8 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <math.h>
-#include <mem.h>
-#include <pthread_time.h>
+#include <memory.h>
+#include <time.h>
 
 pthread_mutex_t lock;
 pthread_barrier_t barrier;
@@ -24,7 +24,8 @@ void printArray(const double *current, int dimension) {
 }
 
 void setArray(double *one, double *two, int size, FILE * fp) {
-    for (int k = 0; k < size; k++){
+    int k;
+    for (k = 0; k < size; k++){
         fscanf(fp, "%lf,", &one[k]);
         two[k] = one[k];
     }
@@ -58,6 +59,7 @@ struct arg_struct {
 void sequentialSolver(void *arguments) {
     struct arg_struct *args = (struct arg_struct *) arguments;
     double a, b, c, d, av, current, diff;
+    int i, j;
     int stop = 0;
     int count = 0;
     int run = 0;
@@ -66,8 +68,8 @@ void sequentialSolver(void *arguments) {
 
     while (stop == 0) {
         stop = 1;
-        for (int i = 1; i < args->dimension - 1; i++) {
-            for (int j = 1; j < args->dimension - 1; j++) {
+        for (i = 1; i < args->dimension - 1; i++) {
+            for (j = 1; j < args->dimension - 1; j++) {
                 current = localOne[i * args->dimension + j];
                 a = *((localOne + (i - 1) * args->dimension) + j);
                 b = *((localOne + i * args->dimension) + (j - 1));
@@ -93,11 +95,13 @@ void sequentialSolver(void *arguments) {
             count--;
         }
     }
+//    printf("Sequential runs: %d\n", run);
 }
 
 void *parallelSolver(void *arguments) {
     struct arg_struct *args = (struct arg_struct *) arguments;
 
+    int i, j;
     int count = 0;
     int self = (int) pthread_self();
     int start_i = 0;
@@ -112,8 +116,8 @@ void *parallelSolver(void *arguments) {
     setThreadArraySections(&start_i, &end_i, args->dimension, args->numThreads, self);
 
     while (1) {
-        for (int i = start_i; i < end_i; i++) {
-            for (int j = 1; j < args->dimension - 1; j++) {
+        for (i = start_i; i < end_i; i++) {
+            for (j = 1; j < args->dimension - 1; j++) {
                 current = localOne[i * args->dimension + j];
                 a = *((localOne + (i - 1) * args->dimension) + j);
                 b = *((localOne + i * args->dimension) + (j - 1));
@@ -134,6 +138,9 @@ void *parallelSolver(void *arguments) {
             run++;
         }
         if (*localStopOne == 1) {
+//            if (self == 1) {
+//                printf("Parallel runs: %d\n", run);
+//            }
             pthread_exit(0);
             break;
         }
@@ -165,7 +172,8 @@ int precisionTest(void *three) {
     int size = args->dimension*args->dimension;
     int count = 0;
     double diff;
-    for (int i = 0;i <size; i++) {
+    int i;
+    for (i = 0;i <size; i++) {
         diff = fabs(args->currentArray[i] - args->nextArray[i]);
         if (diff > args->precision) {
             count++;
@@ -181,9 +189,10 @@ void correctnessTest(double seqArray[], void * two) {
     memset(results, 0, sizeof(results));
     int count = 0;
     double diff;
+    int i, j;
 
-    for (int i = 0; i < args2->dimension; i++) {
-        for (int j = 0; j < args2->dimension; j++) {
+    for (i = 0; i < args2->dimension; i++) {
+        for (j = 0; j < args2->dimension; j++) {
             diff = fabs(seqArray[i * args2->dimension + j] - args2->currentArray[i * args2->dimension + j]);
             if (diff > 0.000001) {
                 results[i * args2->dimension + j] = diff;
@@ -233,7 +242,8 @@ void runSequential(double arr3[], double arr4[], int dimension, double precision
     else {
         fprintf(fpWrite, "Precise\n");
     }
-    for (int i = 0; i < arraySize; i++) {
+    int i;
+    for (i = 0; i < arraySize; i++) {
         fprintf(fpWrite, "%lf,", seqArgs.currentArray[i]);
     }
     fclose(fpWrite);
@@ -241,7 +251,7 @@ void runSequential(double arr3[], double arr4[], int dimension, double precision
 
 int main(int argc, char *argv[]) {
     if (argc > 1) {
-        unsigned int numThreads = (unsigned int)atoi(argv[1]);
+        int numThreads = atoi(argv[1]);
         int dimension = atoi(argv[2]);
         double precision = atof(argv[3]);
         int arraySize = dimension*dimension;
@@ -274,7 +284,7 @@ int main(int argc, char *argv[]) {
         fclose(fpReadSeqArray);
 
         clock_gettime(CLOCK_MONOTONIC, &begin);
-        pthread_t *thread = malloc(sizeof(pthread_t) * numThreads);
+        pthread_t *thread = malloc(sizeof(pthread_t) * (long unsigned int) numThreads);
         if (thread == NULL) {
             printf("out of memory\n");
             exit(EXIT_FAILURE);
@@ -285,7 +295,7 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        if (pthread_barrier_init(&barrier, NULL, numThreads) != 0) {
+        if (pthread_barrier_init(&barrier, NULL, (unsigned int) numThreads) != 0) {
             printf("barrier init failed\n");
             exit(EXIT_FAILURE);
         }
@@ -329,4 +339,5 @@ int main(int argc, char *argv[]) {
         }
         correctnessTest(seqArray1, &parallelArgs);
     }
+    return 0;
 }
