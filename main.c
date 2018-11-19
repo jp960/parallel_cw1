@@ -4,6 +4,7 @@
 #include <math.h>
 #include <memory.h>
 #include <time.h>
+#include <unistd.h>
 
 pthread_mutex_t lock;
 pthread_barrier_t barrier;
@@ -25,6 +26,7 @@ void printArray(const double *current, int dimension) {
 
 void setArray(double *one, double *two, int size, FILE * fp) {
     int k;
+    char pwd[100];
     for (k = 0; k < size; k++){
         fscanf(fp, "%lf,", &one[k]);
         two[k] = one[k];
@@ -54,6 +56,11 @@ struct arg_struct {
     int numThreads;
     int *currentStop;
     int *nextStop;
+};
+
+struct thread_arg {
+    int threadId;
+    struct arg_struct * args;
 };
 
 void sequentialSolver(void *arguments) {
@@ -99,11 +106,12 @@ void sequentialSolver(void *arguments) {
 }
 
 void *parallelSolver(void *arguments) {
-    struct arg_struct *args = (struct arg_struct *) arguments;
+    struct thread_arg *thread_args = (struct thread_arg *) arguments;
+    struct arg_struct *args = thread_args->args;
 
     int i, j;
     int count = 0;
-    int self = (int) pthread_self();
+    int self = thread_args->threadId;
     int start_i = 0;
     int end_i = 0;
     int run = 0;
@@ -211,9 +219,6 @@ void correctnessTest(double seqArray[], void * two) {
 
 void runSequential(double arr3[], double arr4[], int dimension, double precision, int numThreads, char * filename) {
     int arraySize = dimension * dimension;
-    FILE * fpRead = fopen("./numbers.txt", "r+");
-    setArray(arr3, arr4, arraySize, fpRead);
-    fclose(fpRead);
 
     struct timespec begin, end;
     time_t time_spent;
@@ -232,7 +237,6 @@ void runSequential(double arr3[], double arr4[], int dimension, double precision
     clock_gettime(CLOCK_MONOTONIC, &end);
 
     time_spent = (1000000000L * (end.tv_sec - begin.tv_sec)) + end.tv_nsec - begin.tv_nsec;
-    printf("Sequential run complete\n");
     FILE * fpWrite = fopen(filename, "w+");
     fprintf(fpWrite, "Time: %llu nanoseconds.\n", (unsigned long long int) time_spent);
     int count = precisionTest(&seqArgs);
@@ -263,13 +267,17 @@ int main(int argc, char *argv[]) {
         double arr2[arraySize];
         double arr3[arraySize];
         double arr4[arraySize];
-        FILE * fp1 = fopen("./numbers.txt", "r+");
+        FILE * fp1 = fopen("numbers.txt", "r+");
         setArray(arr1, arr2, arraySize, fp1);
         fclose(fp1);
 
         char seqFilename[64];
-        sprintf(seqFilename, "seqOut_%d.txt", dimension);
+	    sprintf(seqFilename, "seqOut_%d.txt", dimension);
         if (numThreads == 1) {
+            FILE * fpRead = fopen("numbers.txt", "r+");
+            setArray(arr3, arr4, arraySize, fpRead);
+            fclose(fpRead);
+
             runSequential(arr3, arr4, dimension, precision, numThreads, seqFilename);
         }
 
@@ -300,18 +308,23 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        struct arg_struct parallelArgs;
-        parallelArgs.dimension = dimension;
-        parallelArgs.precision = precision;
-        parallelArgs.currentArray = arr1;
-        parallelArgs.nextArray = arr2;
-        parallelArgs.numThreads = numThreads;
-        parallelArgs.currentStop = malloc(sizeof(int));
-        parallelArgs.nextStop = malloc(sizeof(int));
+        struct arg_struct parallelSharedArgs;
+        parallelSharedArgs.dimension = dimension;
+        parallelSharedArgs.precision = precision;
+        parallelSharedArgs.currentArray = arr1;
+        parallelSharedArgs.nextArray = arr2;
+        parallelSharedArgs.numThreads = numThreads;
+        parallelSharedArgs.currentStop = malloc(sizeof(int));
+        parallelSharedArgs.nextStop = malloc(sizeof(int));
+        struct thread_arg parallelArgs[numThreads];
 
         int i;
         for (i = 0; i < numThreads; i++) {
-            if (pthread_create(&thread[i], NULL, parallelSolver, (void *) &parallelArgs) != 0) {
+            int *id = malloc(sizeof(int));
+            *id = i+1;
+            parallelArgs[i].args = &parallelSharedArgs;
+            parallelArgs[i].threadId = *id;
+            if (pthread_create(&thread[i], NULL, parallelSolver, (void *) &parallelArgs[i]) != 0) {
                 printf("Error. \n");
                 exit(EXIT_FAILURE);
             }
@@ -330,14 +343,14 @@ int main(int argc, char *argv[]) {
         printf("Parallel run\n");
         printf("Number of Threads: %d\n", numThreads);
         printf("Time: %llu nanoseconds.\n", (unsigned long long int) time_spent);
-        int count = precisionTest(&parallelArgs);
+        int count = precisionTest(&parallelSharedArgs);
         if(count != 0){
             printf("Not precise in %d places\n", count);
         }
         else {
             printf("Precise\n");
         }
-        correctnessTest(seqArray1, &parallelArgs);
+        correctnessTest(seqArray1, &parallelSharedArgs);
     }
     return 0;
 }
