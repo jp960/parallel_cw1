@@ -9,11 +9,29 @@
 pthread_mutex_t lock;
 pthread_barrier_t barrier;
 
-/**/
+/* Struct that stores all of the variables that are shared between the threads */
+struct arg_struct {
+    int dimension;
+    double *currentArray;
+    double *nextArray;
+    double precision;
+    int numThreads;
+    int *currentStop;
+    int *nextStop;
+};
+
+/* Struct that stores a pointer to an args_struct and the int thread id for each thread */
+struct thread_arg {
+    int threadId;
+    struct arg_struct * args;
+};
+
+/* Function that returns the average of 4 doubles */
 double average(double a, double b, double c, double d) {
     return (a + b + c + d) / 4.0;
 }
 
+/* Function that prints a given array with a given dimension */
 void printArray(const double *current, int dimension) {
     int i, j;
     for (i = 0; i < dimension; i++) {
@@ -24,6 +42,8 @@ void printArray(const double *current, int dimension) {
     }
 }
 
+/* Function that reads in the array of a given size from an open file.
+ * Makes a copy of this array to be used as the next array */
 void setArray(double *one, double *two, int size, FILE * fp) {
     int k;
     char pwd[100];
@@ -33,6 +53,8 @@ void setArray(double *one, double *two, int size, FILE * fp) {
     }
 }
 
+/* Function that sets the values of the start and end index of the array that each thread has to work on.
+ * Does the calculation to split the array and the remainder rows. */
 void setThreadArraySections(int *start_i, int *end_i, int dimension, int numThreads, int self){
     int remainder, rowsToUse, numRows;
 
@@ -48,21 +70,7 @@ void setThreadArraySections(int *start_i, int *end_i, int dimension, int numThre
     *end_i = *start_i + rowsToUse;
 }
 
-struct arg_struct {
-    int dimension;
-    double *currentArray;
-    double *nextArray;
-    double precision;
-    int numThreads;
-    int *currentStop;
-    int *nextStop;
-};
-
-struct thread_arg {
-    int threadId;
-    struct arg_struct * args;
-};
-
+/* Runs the sequential algorithm on a given array in the args_struct */
 void sequentialSolver(void *arguments) {
     struct arg_struct *args = (struct arg_struct *) arguments;
     double a, b, c, d, av, current, diff;
@@ -105,6 +113,7 @@ void sequentialSolver(void *arguments) {
 //    printf("Sequential runs: %d\n", run);
 }
 
+/* Runs the parallelised algorithm for a given thread on a given array in the thread_arg  */
 void *parallelSolver(void *arguments) {
     struct thread_arg *thread_args = (struct thread_arg *) arguments;
     struct arg_struct *args = thread_args->args;
@@ -175,6 +184,7 @@ void *parallelSolver(void *arguments) {
     }
 }
 
+/* Checks if the difference between the final two arrays is less than the precision */
 int precisionTest(void *three) {
     struct arg_struct *args = (struct arg_struct *) three;
     int size = args->dimension*args->dimension;
@@ -190,6 +200,7 @@ int precisionTest(void *three) {
     return count;
 }
 
+/* Checks if there is a difference between the sequential result array and the parallel result arg_struct */
 void correctnessTest(double seqArray[], void * two) {
     struct arg_struct *args2 = (struct arg_struct *) two;
     int size = args2->dimension*args2->dimension;
@@ -217,6 +228,12 @@ void correctnessTest(double seqArray[], void * two) {
     }
 }
 
+/* Runs the sequential algorithm for a given array and outputs:
+ *  - the time taken
+ *  - the result of the precision check
+ *  - the final array
+ *  to a file with a given filename
+ */
 void runSequential(double arr3[], double arr4[], int dimension, double precision, int numThreads, char * filename) {
     int arraySize = dimension * dimension;
 
@@ -253,6 +270,14 @@ void runSequential(double arr3[], double arr4[], int dimension, double precision
     fclose(fpWrite);
 }
 
+/* Main method that has 3 parameters:
+ *  - number of threads (int)
+ *  - array dimension
+ *  - precision
+ *  Fills an array of size dimension squared with values read in from the file of comma separated
+ *  numbers
+ *  Runs sequential with that array if number of threads is 1
+ *  Runs parallel and checks the correctness by reading in the sequential result for that array dimension */
 int main(int argc, char *argv[]) {
     if (argc > 1) {
         int numThreads = atoi(argv[1]);
